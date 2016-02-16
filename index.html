@@ -21,16 +21,26 @@
         </script>
 
         <script type="text/javascript">
+            var glExtras = {
+                makeFloatComputeTexture: function(gl, components, width, height, options) {
+                    options["format"] = ["luminance", "luminanceAlpha", "rgb", "rgba"][components];
+                    options["type"] = "float";
+
+                    return gl.createEmptyTexture(width, height, options);
+                },
+            };
+        </script>
+
+        <script type="text/javascript">
             "use strict";
             function start() {
                 var gl = glUtils.initGL(document.getElementById("canvas"), {
                     extensions: ["ANGLE_instanced_arrays", "OES_texture_float", "OES_texture_float_linear"],
                 });
+                gl.viewport(0, 0, 800, 600);
 
                 gl.clearColor(1.0, 0.0, 0.0, 1.0);
                 gl.clear(gl.COLOR_BUFFER_BIT);
-
-                var arrayBuffer = gl.createArrayBuffer(gl.STATIC_DRAW, [1.0, 1.0, 1.0, 1.0]);
 
                 var program = gl.createShaderProgram(
                     gl.createShaderFromId("shader-vs"),
@@ -50,10 +60,7 @@
 
                 program.use();
 
-                gl.viewport(0, 0, 800, 600);
-
                 vao.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-                // Don't require color buffer float, use luminance and luminance alpha for 1 and 2 component floats
             }
         </script>
     </head>

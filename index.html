@@ -246,14 +246,15 @@
             uniform sampler2D uDye;
             void main() {
                 vec2 advectionPos = getAdvectionPosition(uVelocity, vWorldPos);
-                gl_FragColor = vec4(texture2D(uDye, worldToTexCoord(advectionPos)).xyz, 0.0);
+                gl_FragColor = vec4(texture2D(uDye, worldToTexCoord(advectionPos)).xyz * , 0.0);
             }
 
             //----- simple-init-circle
             precision highp float;
             uniform vec4 uValue;
+            uniform vec2 uResolution;
             void main() {
-                if (length((gl_FragCoord.xy - vec2(100.0, 300.0)) * vec2(1.0, 1.0)) < 10.0) {
+                if (length((gl_FragCoord.xy - uResolution * vec2(0.125, 0.5))) < uResolution.x / 40.0) {
                     gl_FragColor = uValue;
                 } else {
                     discard;
@@ -310,9 +311,15 @@
         <script type="text/javascript">
             "use strict";
 
-            var FluidSimulation = function(width, height) {
-                this.width = width;
-                this.height = height;
+            var FluidSimulation = function(canvas, config) {
+                this.canvas = canvas;
+                this.config = config;
+
+                this.width = this.canvas.width;
+                this.height = this.canvas.height;
+
+                this.simulationWidth = this.width * config.simulationScale;
+                this.simulationHeight = this.height * config.simulationScale;
             };
 
             FluidSimulation.prototype = {
@@ -324,7 +331,7 @@
                         minFilter: "linear",
                         magFilter: "linear",
                     };
-                    return glExtras.makeHalfFloatComputeTexture(this.gl, components, this.width, this.height, options);
+                    return glExtras.makeHalfFloatComputeTexture(this.gl, components, this.simulationWidth, this.simulationHeight, options);
                 },
 
                 createDoubleComputeTexture: function(components) {
@@ -339,20 +346,20 @@
                     var program = this.shaderPak.createProgram(this.gl, "compute-vs", name);
 
                     var aspectRatio = [1.0, 1.0];
-                    if (this.width > this.height) {
-                        aspectRatio[1] = this.height / this.width;
+                    if (this.simulationWidth > this.simulationHeight) {
+                        aspectRatio[1] = this.simulationHeight / this.simulationWidth;
                     } else {
-                        aspectRatio[0] = this.width / this.height;
+                        aspectRatio[0] = this.simulationWidth / this.simulationHeight;
                     }
 
                     return {
                         program: program,
                         vao: program.createVAO({aPosition: {buffer: this.quadVertices}}),
                         uniforms: {
-                            uResolution: [this.width, this.height],
-                            uInvResolution: [1.0 / this.width, 1.0 / this.height],
+                            uResolution: [this.simulationWidth, this.simulationHeight],
+                            uInvResolution: [1.0 / this.simulationWidth, 1.0 / this.simulationHeight],
                             uAspectRatio: aspectRatio,
-                            uCellSize: 1.0 / this.width * aspectRatio[0],
+                            uCellSize: 1.0 / this.simulationWidth * aspectRatio[0],
                         },
                     }
                 },
@@ -382,15 +389,12 @@
                 },
 
                 start: function() {
-                    this.gl = glUtils.initGL(document.getElementById("canvas"), {
+                    this.gl = glUtils.initGL(this.canvas, {
                         extensions: ["ANGLE_instanced_arrays", "OES_texture_float", "OES_texture_float_linear"],
                     });
 
                     this.dt = 0;
-                    this.width = 800;
-                    this.height = 600;
 
-                    this.gl.viewport(0, 0, this.width, this.height);
                     this.fbo = this.gl.createFBO();
 
                     this.shaderPak = new glExtras.ShaderPak(document.getElementById("shader-src").textContent);
@@ -444,13 +448,15 @@
                 frame: function(dt) {
                     this.dt = Math.min(dt, 0.01);
 
+                    this.gl.viewport(0, 0, this.simulationWidth, this.simulationHeight);
+
                     this.fluidForce.clear([0.0, 0.0, 0.0, 0.0]);
                     if (!this.first) {
                         this.counter = 0;
                         this.first = true;
                     }
 
-                    if (this.counter ++ < 100) {
+                    if (this.counter ++ < this.config.emitFrames) {
                         this.renderQuadProgram(this.simpleInitCircle, this.fluidForce, {uValue: [10.0, 0.0, 0.0, 0.0]});
 
                         this.gl.enable(this.gl.BLEND);
@@ -468,7 +474,7 @@
                     this.renderQuadProgram(this.computeDivergence, this.fluidDivergence);
 
                     this.fluidPressure.ping.clear([0.0, 0.0, 0.0, 0.0]);
-                    for (var i = 0; i < 100; i++) {
+                    for (var i = 0; i < this.config.numJacobiIters; i++) {
                         this.renderQuadProgram(this.solvePressure, this.fluidPressure.pong);
                         this.fluidPressure.swap();
                     }
@@ -479,15 +485,24 @@
                     this.renderQuadProgram(this.advectDye, this.dye.pong, {uDye: this.dye.ping});
                     this.dye.swap();
 
+                    this.gl.viewport(0, 0, this.width, this.height);
                     this.renderQuadProgram(this.drawDye, undefined, {uDye: this.dye.ping});
                 },
             };
 
-            var fluid = new FluidSimulation();
+            var fluid;
+            var start = function() {
+                fluid = new FluidSimulation(document.getElementById("canvas"), {
+                    simulationScale: 0.5,
+                    numJacobiIters: 50,
+                    emitFrames: 10000,
+                });
+                fluid.start();
+            }
         </script>
     </head>
 
-    <body onload="fluid.start();">
+    <body onload="start();">
         <canvas id="canvas" width="800" height="600">
             Your browser doesn't appear to support the HTML5 <code>&lt;canvas&gt;</code> element.
         </canvas>

@@ -256,9 +256,11 @@
             //----- simple-init-circle
             precision highp float;
             uniform vec4 uValue;
+            uniform vec2 uTargetPos;
+            uniform float uRadius;
             varying vec2 vWorldPos;
             void main() {
-                if (length(vWorldPos) < 1.0 / 40.0) {
+                if (length(vWorldPos - uTargetPos) < uRadius) {
                     gl_FragColor = uValue;
                 } else {
                     discard;
@@ -324,6 +326,13 @@
 
                 this.simulationWidth = this.width * config.simulationScale;
                 this.simulationHeight = this.height * config.simulationScale;
+
+                this.aspectRatio = [1.0, 1.0];
+                if (this.simulationWidth > this.simulationHeight) {
+                    this.aspectRatio[1] = this.simulationHeight / this.simulationWidth;
+                } else {
+                    this.aspectRatio[0] = this.simulationWidth / this.simulationHeight;
+                }
             };
 
             FluidSimulation.prototype = {
@@ -365,27 +374,27 @@
                 createQuadProgram: function(name) {
                     var program = this.shaderPak.createProgram(this.gl, "compute-vs", name);
 
-                    var aspectRatio = [1.0, 1.0];
-                    if (this.simulationWidth > this.simulationHeight) {
-                        aspectRatio[1] = this.simulationHeight / this.simulationWidth;
-                    } else {
-                        aspectRatio[0] = this.simulationWidth / this.simulationHeight;
-                    }
-
                     return {
                         program: program,
                         vao: program.createVAO({aPosition: {buffer: this.quadVertices}}),
                         uniforms: {
                             uResolution: [this.simulationWidth, this.simulationHeight],
                             uInvResolution: [1.0 / this.simulationWidth, 1.0 / this.simulationHeight],
-                            uAspectRatio: aspectRatio,
-                            uCellSize: 1.0 / this.simulationWidth * aspectRatio[0],
+                            uAspectRatio: this.aspectRatio,
+                            uCellSize: 1.0 / this.simulationWidth * this.aspectRatio[0],
                         },
                     }
                 },
 
+                canvasToWorld: function(pos) {
+                    return [
+                        (pos[0] / this.width * 2.0 - 1.0) * this.aspectRatio[0],
+                        (pos[1] / this.height * -2.0 + 1.0) * this.aspectRatio[1],
+                    ];
+                },
+
                 renderQuadProgram: function(program, renderTo, uniforms) {
-                   uniforms = uniforms || {};
+                    uniforms = uniforms || {};
 
                     program.uniforms["uVelocity"] = this.fluidVelocity.ping;
                     program.uniforms["uDivergence"] = this.fluidDivergence;
@@ -412,7 +421,6 @@
                     this.gl = glUtils.initGL(this.canvas, {
                         extensions: ["ANGLE_instanced_arrays", "OES_texture_float", "OES_texture_float_linear"],
                     });
-                    this.frame = 0;
 
                     // Misc WebGL stuff
                     this.fbo = this.gl.createFBO();
@@ -447,24 +455,10 @@
 
                     // Init the rest
                     this.initDye();
-
-                    // Run the simulation loop
-                    var self = this;
-                    this.lastTimestamp = 0;
-                    var doFrame = function(timestamp) {
-                        if (self.lastTimestamp != 0) {
-                            var dt = timestamp - self.lastTimestamp;
-                            self.runFrame(dt / 1000);
-                        }
-                        self.lastTimestamp = timestamp;
-                        window.requestAnimationFrame(doFrame);
-                    }
-                    window.requestAnimationFrame(doFrame);
                 },
 
                 runFrame: function(dt) {
                     this.dt = Math.min(dt, 0.01);
-                    this.frame ++;
 
                     // Add inputs to the simulation
                     this.doAddForces();
@@ -489,11 +483,11 @@
 
                 doAddDye: function() {
                     this.gl.viewport(0, 0, this.width, this.height);
-                    if (this.frame < this.config.emitFrames) {
-                        this.gl.enable(this.gl.BLEND);
-                        this.renderQuadProgram(this.simpleInitCircle, this.dye.ping, {uValue: [0.2, 0.7, 0.9, 1.0]});
-                        this.gl.disable(this.gl.BLEND);
-                    }
+                    this.gl.enable(this.gl.BLEND);
+
+                    this.onAddDye && this.onAddDye(this.dye.ping);
+
+                    this.gl.disable(this.gl.BLEND);
                 },
 
                 doUpdateDye: function() {
@@ -510,11 +504,9 @@
                 //----- SIMULATION
                 doAddForces: function() {
                     this.gl.viewport(0, 0, this.simulationWidth, this.simulationHeight);
+                    this.fluidForce.clear([0.0, 0.0, 0.0, 0.0]);
                     // TODO blendmode add
-                    if (this.frame < this.config.emitFrames) {
-                        this.fluidForce.clear([0.0, 0.0, 0.0, 0.0]);
-                        this.renderQuadProgram(this.simpleInitCircle, this.fluidForce, {uValue: [10.0, 0.0, 0.0, 0.0]});
-                    }
+                    this.onAddForces && this.onAddForces(this.fluidForce);
                 },
 
                 doSimulation: function() {
@@ -551,12 +543,71 @@
                 canvas.width = window.innerWidth;
                 canvas.height = window.innerHeight;
 
+                var lastTimestamp = 0;
+
                 fluid = new FluidSimulation(document.getElementById("canvas"), {
                     simulationScale: 400 / Math.max(canvas.width, canvas.height),
                     numJacobiIters: 50,
-                    emitFrames: 10000,
                 });
+
+                // Drawing stuff with the mouse
+                // TODO make it draw segments instead of circles
+                var lastMousePos = [0.0, 0.0];
+                var mousePos = [0.0, 0.0];
+                var mouseForce = [0.0, 0.0];
+                var mouseDown = false;
+
+                fluid.onAddDye = function(dyeOut) {
+                    if (!mouseDown) {
+                        return;
+                    }
+                    fluid.renderQuadProgram(fluid.simpleInitCircle, dyeOut, {
+                        uValue: [0.2, 0.7, 0.9, 1.0],
+                        uTargetPos: mousePos,
+                        uRadius: 0.02,
+                    });
+                };
+
+                fluid.onAddForces = function(forcesOut) {
+                    if (!mouseDown) {
+                        return;
+                    }
+                    fluid.renderQuadProgram(fluid.simpleInitCircle, forcesOut, {
+                        uValue: mouseForce.concat([0.0, 0.0]),
+                        uTargetPos: mousePos,
+                        uRadius: 0.02,
+                    });
+                };
+
                 fluid.start();
+
+                var updateMouse = function(e) {
+                    mouseDown = e.buttons & 1;
+                    mousePos = fluid.canvasToWorld([e.clientX, e.clientY]);
+                };
+                canvas.addEventListener("mouseleave", function(e){mouseDown = false});
+                canvas.addEventListener("mouseenter", function(e){updateMouse(e)});
+                canvas.addEventListener("mousedown", function(e){updateMouse(e)});
+                canvas.addEventListener("mouseup", function(e){updateMouse(e)});
+                canvas.addEventListener("mousemove", function(e){updateMouse(e)});
+
+                var frame = function(dt) {
+                    mouseForce[0] = (mousePos[0] - lastMousePos[0]) / dt / dt;
+                    mouseForce[1] = (mousePos[1] - lastMousePos[1]) / dt / dt;
+                    lastMousePos = mousePos;
+                }
+
+                // Run the simulation loop
+                var frameLoop = function(timestamp) {
+                    if (lastTimestamp != 0) {
+                        var dt = timestamp - lastTimestamp;
+                        frame(dt / 1000);
+                        fluid.runFrame(dt / 1000);
+                    }
+                    lastTimestamp = timestamp;
+                    window.requestAnimationFrame(frameLoop);
+                }
+                window.requestAnimationFrame(frameLoop);
             }
         </script>
     </head>

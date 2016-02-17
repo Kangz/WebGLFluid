@@ -4,68 +4,465 @@
         <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
 
         <script type="text/javascript" src="external/gl-matrix-min.js"></script>
+        <script type="text/javascript" src="lib/glExtras.js"></script>
         <script type="text/javascript" src="lib/glUtils.js"></script>
 
-        <script id="shader-fs" type="x-shader/x-fragment">
+        <script id="shader-src" type="x-shader/x-fragment">
+            //----- half-float-texture
+            // A halfish A is a float encoded on 16 bits as follows
+            // |      15       |1|
+            // |       e       |s|
+            // With e being a float encoded in a 6.9 fixed point format.
+            // The corresponding float is 0 if A is 0, otherwise
+            //     F = sign * exp2(e) / 2^16;
+            // That way the range of this representation goes from about 2^16 to 2^-16
+            // which is about the range representable by a half float.
+
+            float round(float f) {
+                return floor(f + 0.5);
+            }
+
+            float floatToHalfish(float f) {
+                float sign = sign(f);
+                f = abs(f);
+
+                float exponent = log2(f * 65536.0);
+                if (exponent < 0.0) {
+                    return 0.0;
+                }
+
+                float e = round(exponent * 512.0);
+                return e * 2.0 + sign;
+            }
+
+            float halfishToFloat(float a) {
+                if (a == 0.0) {
+                    return 0.0;
+                }
+
+                float e = floor(a / 2.0);
+                float sign = round(a - 2.0 * e);
+                if (sign == 0.0) {
+                    sign = -1.0;
+                }
+
+                float exponent = exp2(e / 512.0) / 65536.0;
+
+                return sign * exponent;
+            }
+
+            // Samples a float texture using one of our halfish formats.
+            // There is no linear interpolation.
+            /*float textureFloat1(sampler2D texture, vec2 texCoord) {
+                vec3 color = texture2D(texture, texCoord).xyz;
+                float red = round(color.r * 31.0);
+                float green = round(color.g * 63.0);
+                float blue = round(color.b * 31.0);
+
+                float unpacked = ((red * 64.0) + green) * 32.0 + blue;
+                return halfishToFloat(unpacked);
+            }
+
+            vec4 float1FragColor(float a) {
+                float unpacked = floatToHalfish(a);
+
+                float rg = floor(unpacked / 32.0);
+                float blue = (unpacked - rg * 32.0) / 31.0;
+                float r = floor(rg / 64.0);
+                float green = (rg - r * 64.0) / 63.0;
+                float red = r / 31.0;
+                return vec4(red, green, blue, 1.0);
+            }*/
+            float textureFloat1(sampler2D texture, vec2 texCoord) {
+                return texture2D(texture, texCoord).x;
+            }
+
+            vec4 float1FragColor(float a) {
+                return vec4(a, 0.0, 0.0, 0.0);
+            }
+
+            //----- common-fluid-compute
+            @include(half-float-texture)
+
+            uniform sampler2D uVelocity;
+            uniform sampler2D uDivergence;
+            uniform sampler2D uPressure;
+            uniform sampler2D uForce;
+
+            uniform float uDt;
+            uniform vec2 uResolution;
+            uniform vec2 uInvResolution;
+            uniform vec2 uAspectRatio;
+            uniform float uCellSize;
+
+            varying vec2 vTexCoord;
+            varying vec2 vWorldPos;
+
+            vec2 worldToTexCoord(vec2 world) {
+                return world / uAspectRatio;
+            }
+
+            vec2 texCoordToWorld(vec2 texCoord) {
+                return texCoord * uAspectRatio;
+            }
+
+            vec2 sampleVelocity(sampler2D velocity, vec2 texCoord) {
+                vec2 offset = vec2(0.0, 0.0);
+                vec2 multiplier = vec2(1.0, 1.0);
+
+                // TODO replace with the obstacle texture
+                if (texCoord.x < 0.0) {
+                    offset.x = uInvResolution.x;
+                    multiplier.x = -1.0;
+                } else if (texCoord.x > 1.0) {
+                    offset.x = -uInvResolution.x;
+                    multiplier.x = -1.0;
+                }
+                if (texCoord.y < 0.0) {
+                    offset.y = uInvResolution.y;
+                    multiplier.y = -1.0;
+                } else if (texCoord.y > 1.0) {
+                    offset.y = -uInvResolution.y;
+                    multiplier.y = -1.0;
+                }
+
+                return multiplier * texture2D(velocity, texCoord + offset).xy;
+            }
+
+            float samplePressure(sampler2D pressure, vec2 texCoord) {
+                vec2 offset = vec2(0.0, 0.0);
+
+                // TODO replace with the obstacle texture
+                if (texCoord.x < 0.0) {
+                    offset.x = uInvResolution.x;
+                } else if (texCoord.x > 1.0) {
+                    offset.x = -uInvResolution.x;
+                }
+                if (texCoord.y < 0.0) {
+                    offset.y = uInvResolution.y;
+                } else if (texCoord.y > 1.0) {
+                    offset.y = -uInvResolution.y;
+                }
+
+                return textureFloat1(pressure, texCoord + offset);
+            }
+
+            vec2 getAdvectionPosition(sampler2D velocity, vec2 worldPos) {
+                //TODO try MacCormack
+                return worldPos - sampleVelocity(uVelocity, worldToTexCoord(worldPos)) * uDt;
+            }
+
+            //----- advect-velocity
             precision highp float;
+            @include(common-fluid-compute)
+
             void main() {
-                gl_FragColor = vec4(1.0, 0.2, 0.2, 1.0);
+                vec2 advectionPos = getAdvectionPosition(uVelocity, vWorldPos);
+                gl_FragColor = vec4(texture2D(uVelocity, worldToTexCoord(advectionPos)).xy, 0.0, 0.0);
             }
-        </script>
-        <script id="shader-vs" type="x-shader/x-vertex">
+
+            //----- apply-forces
+            precision highp float;
+            @include(common-fluid-compute)
+
+            void main() {
+                vec2 velocity = sampleVelocity(uVelocity, vTexCoord);
+                vec2 force = texture2D(uForce, vTexCoord).xy;
+                gl_FragColor = vec4(velocity + force * uDt, 0.0, 0.0);
+            }
+
+            //----- compute-divergence
+            precision highp float;
+            @include(common-fluid-compute)
+
+            void main() {
+                vec2 left = sampleVelocity(uVelocity, vTexCoord - vec2(uInvResolution.x, 0.0));
+                vec2 right = sampleVelocity(uVelocity, vTexCoord + vec2(uInvResolution.x, 0.0));
+                vec2 bottom = sampleVelocity(uVelocity, vTexCoord - vec2(0.0, uInvResolution.y));
+                vec2 top = sampleVelocity(uVelocity, vTexCoord + vec2(0.0, uInvResolution.y));
+
+                float divergence = 0.5 / uCellSize * (right.x - left.x + top.y - bottom.y);
+                gl_FragColor = float1FragColor(divergence);
+            }
+
+            //----- solve-pressure
+            precision highp float;
+            @include(common-fluid-compute)
+
+            void main() {
+                float left = samplePressure(uPressure, vTexCoord - vec2(uInvResolution.x, 0.0));
+                float right = samplePressure(uPressure, vTexCoord + vec2(uInvResolution.x, 0.0));
+                float bottom = samplePressure(uPressure, vTexCoord - vec2(0.0, uInvResolution.y));
+                float top = samplePressure(uPressure, vTexCoord + vec2(0.0, uInvResolution.y));
+
+                float divergence = textureFloat1(uDivergence, vTexCoord);
+                float pressure = (left + right + bottom + top - divergence * uCellSize * uCellSize) / 4.0;
+                gl_FragColor = float1FragColor(pressure);
+            }
+
+            //----- substract-pressure-gradient
+            precision highp float;
+            @include(common-fluid-compute)
+
+            void main() {
+                float left = samplePressure(uPressure, vTexCoord - vec2(uInvResolution.x, 0.0));
+                float right = samplePressure(uPressure, vTexCoord + vec2(uInvResolution.x, 0.0));
+                float bottom = samplePressure(uPressure, vTexCoord - vec2(0.0, uInvResolution.y));
+                float top = samplePressure(uPressure, vTexCoord + vec2(0.0, uInvResolution.y));
+
+                vec2 velocity = sampleVelocity(uVelocity, vTexCoord);
+                gl_FragColor = vec4(velocity - 0.5 / uCellSize * vec2(right - left, top - bottom), 0.0, 0.0);
+            }
+
+            //----- advect-dye
+            precision highp float;
+            @include(common-fluid-compute)
+
+            uniform sampler2D uDye;
+            void main() {
+                vec2 advectionPos = getAdvectionPosition(uVelocity, vWorldPos);
+                gl_FragColor = vec4(texture2D(uDye, worldToTexCoord(advectionPos)).xyz, 0.0);
+            }
+
+            //----- simple-init-circle
+            precision highp float;
+            uniform vec4 uValue;
+            void main() {
+                if (length((gl_FragCoord.xy - vec2(50.0, 150.0)) * vec2(1.0, 1.0)) < 10.0) {
+                    gl_FragColor = uValue;
+                } else {
+                    discard;
+                }
+            }
+
+            //----- draw-velocity
+            precision highp float;
+            uniform sampler2D uVelocity;
+            varying vec2 vTexCoord;
+            void main() {
+                gl_FragColor = vec4(texture2D(uVelocity, vTexCoord).xy, 0.0, 1.0);
+            }
+
+            //----- draw-divergence
+            precision highp float;
+            uniform sampler2D uDivergence;
+            varying vec2 vTexCoord;
+            void main() {
+                gl_FragColor = vec4(texture2D(uDivergence, vTexCoord).x * 1000.0, 0.0, 0.0, 1.0);
+            }
+
+            //----- draw-pressure
+            precision highp float;
+            uniform sampler2D uPressure;
+            varying vec2 vTexCoord;
+            void main() {
+                gl_FragColor = vec4(texture2D(uPressure, vTexCoord).x * 100.0, 0.0, 0.0, 1.0);
+            }
+
+            //----- draw-dye
+            precision highp float;
+            uniform sampler2D uDye;
+            varying vec2 vTexCoord;
+            void main() {
+                gl_FragColor = vec4(texture2D(uDye, vTexCoord).xyz, 1.0);
+            }
+
+            //----- compute-vs
             attribute vec2 aPosition;
-      
-            void main(void){
-                gl_Position = vec4(aPosition * 0.9, 0.0, 1.0);
+
+            uniform vec2 uAspectRatio;
+
+            varying vec2 vTexCoord;
+            varying vec2 vWorldPos;
+
+            void main(void) {
+                vTexCoord = aPosition / 2.0 + vec2(0.5, 0.5);
+                vWorldPos = vTexCoord * uAspectRatio;
+                gl_Position = vec4(aPosition, 0.0, 1.0);
             }
-        </script>
-
-        <script type="text/javascript">
-            var glExtras = {
-                makeFloatComputeTexture: function(gl, components, width, height, options) {
-                    options["format"] = ["luminance", "luminanceAlpha", "rgb", "rgba"][components];
-                    options["type"] = "float";
-
-                    return gl.createEmptyTexture(width, height, options);
-                },
-            };
         </script>
 
         <script type="text/javascript">
             "use strict";
-            function start() {
-                var gl = glUtils.initGL(document.getElementById("canvas"), {
-                    extensions: ["ANGLE_instanced_arrays", "OES_texture_float", "OES_texture_float_linear"],
-                });
-                gl.viewport(0, 0, 800, 600);
 
-                gl.clearColor(1.0, 0.0, 0.0, 1.0);
-                gl.clear(gl.COLOR_BUFFER_BIT);
+            var FluidSimulation = function(width, height) {
+                this.width = width;
+                this.height = height;
+            };
 
-                var program = gl.createShaderProgram(
-                    gl.createShaderFromId("shader-vs"),
-                    gl.createShaderFromId("shader-fs")
-                );
+            FluidSimulation.prototype = {
+                createComputeTexture: function(components) {
+                    var options = {
+                        wrapS: "edge",
+                        wrapT: "edge",
+                        // TODO become edge
+                        minFilter: "linear",
+                        magFilter: "linear",
+                    };
+                    return glExtras.makeHalfFloatComputeTexture(this.gl, components, this.width, this.height, options);
+                },
 
-                var vertices = gl.createArrayBuffer(gl.STATIC_DRAW, [
-                    -1.0, -1.0,
-                     1.0, -1.0,
-                    -1.0,  1.0,
-                     1.0,  1.0,
-                ]);
+                createDoubleComputeTexture: function(components) {
+                    return {
+                        ping: this.createComputeTexture(components),
+                        pong: this.createComputeTexture(components),
+                        swap: function() {var tmp = this.ping; this.ping = this.pong; this.pong = tmp;},
+                    };
+                },
 
-                var vao = program.createVAO({
-                    aPosition: {buffer: vertices},
-                });
+                createQuadProgram: function(name) {
+                    var program = this.shaderPak.createProgram(this.gl, "compute-vs", name);
 
-                program.use();
+                    var aspectRatio = [1.0, 1.0];
+                    if (this.width > this.height) {
+                        aspectRatio[1] = this.height / this.width;
+                    } else {
+                        aspectRatio[0] = this.width / this.height;
+                    }
 
-                vao.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-            }
+                    return {
+                        program: program,
+                        vao: program.createVAO({aPosition: {buffer: this.quadVertices}}),
+                        uniforms: {
+                            uResolution: [this.width, this.height],
+                            uInvResolution: [1.0 / this.width, 1.0 / this.height],
+                            uAspectRatio: aspectRatio,
+                            uCellSize: 1.0 / this.width * aspectRatio[0],
+                        },
+                    }
+                },
+
+                renderQuadProgram: function(program, renderTo, uniforms) {
+                   uniforms = uniforms || {};
+
+                    program.uniforms["uVelocity"] = this.fluidVelocity.ping;
+                    program.uniforms["uDivergence"] = this.fluidDivergence;
+                    program.uniforms["uPressure"] = this.fluidPressure.ping;
+                    program.uniforms["uForce"] = this.fluidForce;
+                    program.uniforms["uDt"] = this.dt;
+
+                    for (var property in uniforms) {
+                        program.uniforms[property] = uniforms[property];
+                    }
+
+                    if (renderTo) {
+                        this.fbo.bind();
+                        this.fbo.attach({color: renderTo});
+                    } else {
+                        this.gl.defaultFramebuffer.bind();
+                    }
+
+                    program.program.setUniforms(program.uniforms).use();
+                    program.vao.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4);
+                },
+
+                start: function() {
+                    this.gl = glUtils.initGL(document.getElementById("canvas"), {
+                        extensions: ["ANGLE_instanced_arrays", "OES_texture_float", "OES_texture_float_linear"],
+                    });
+
+                    this.dt = 0;
+                    this.width = 400;
+                    this.height = 300;
+
+                    this.gl.viewport(0, 0, this.width, this.height);
+                    this.fbo = this.gl.createFBO();
+
+                    this.shaderPak = new glExtras.ShaderPak(document.getElementById("shader-src").textContent);
+
+                    this.quadVertices = this.gl.createArrayBuffer(this.gl.STATIC_DRAW, [
+                        -1.0, -1.0,
+                         1.0, -1.0,
+                        -1.0,  1.0,
+                         1.0,  1.0,
+                    ]);
+
+                    // Testing programs
+                    this.simpleInitCircle = this.createQuadProgram("simple-init-circle");
+                    this.drawVelocity = this.createQuadProgram("draw-velocity");
+                    this.drawDivergence = this.createQuadProgram("draw-divergence");
+                    this.drawDivergence = this.createQuadProgram("draw-pressure");
+                    this.drawDye = this.createQuadProgram("draw-dye");
+
+                    // Compute programs
+                    this.advectVelocity = this.createQuadProgram("advect-velocity");
+                    this.advectDye = this.createQuadProgram("advect-dye");
+                    this.applyForces = this.createQuadProgram("apply-forces");
+                    this.computeDivergence = this.createQuadProgram("compute-divergence");
+                    this.solvePressure = this.createQuadProgram("solve-pressure");
+                    this.substractPressureGradient = this.createQuadProgram("substract-pressure-gradient");
+
+                    // Create the compute textures
+                    this.fluidVelocity = this.createDoubleComputeTexture(2);
+                    this.fluidVelocity.ping.clear([0.0, 0.0, 0.0, 0.0]);
+
+                    this.fluidDivergence = this.createComputeTexture(1);
+                    this.fluidPressure = this.createDoubleComputeTexture(1);
+                    this.fluidForce = this.createComputeTexture(2);
+
+                    this.dye = this.createDoubleComputeTexture(3);
+
+                    // Run the simulation loop
+                    var self = this;
+                    this.lastTimestamp = 0;
+                    var doFrame = function(timestamp) {
+                        if (self.lastTimestamp != 0) {
+                            var dt = timestamp - self.lastTimestamp;
+                            self.frame(dt / 1000);
+                        }
+                        self.lastTimestamp = timestamp;
+                        window.requestAnimationFrame(doFrame);
+                    }
+                    window.requestAnimationFrame(doFrame);
+                },
+
+                frame: function(dt) {
+                    this.dt = Math.min(dt, 0.01);
+
+                    this.fluidForce.clear([0.0, 0.0, 0.0, 0.0]);
+                    if (!this.first) {
+                        this.counter = 0;
+                        this.first = true;
+                    }
+
+                    if (this.counter ++ < 100) {
+                        this.renderQuadProgram(this.simpleInitCircle, this.fluidForce, {uValue: [10.0, 0.0, 0.0, 0.0]});
+
+                        this.gl.enable(this.gl.BLEND);
+                        this.renderQuadProgram(this.simpleInitCircle, this.dye.ping, {uValue: [0.2, 0.7, 0.9, 1.0]});
+                        //this.dye.swap();
+                        this.gl.disable(this.gl.BLEND);
+                    }
+
+                    this.renderQuadProgram(this.advectVelocity, this.fluidVelocity.pong);
+                    this.fluidVelocity.swap();
+
+                    this.renderQuadProgram(this.applyForces, this.fluidVelocity.pong);
+                    this.fluidVelocity.swap();
+
+                    this.renderQuadProgram(this.computeDivergence, this.fluidDivergence);
+
+                    this.fluidPressure.ping.clear([0.0, 0.0, 0.0, 0.0]);
+                    for (var i = 0; i < 100; i++) {
+                        this.renderQuadProgram(this.solvePressure, this.fluidPressure.pong);
+                        this.fluidPressure.swap();
+                    }
+
+                    this.renderQuadProgram(this.substractPressureGradient, this.fluidVelocity.pong);
+                    this.fluidVelocity.swap();
+
+                    this.renderQuadProgram(this.advectDye, this.dye.pong, {uDye: this.dye.ping});
+                    this.dye.swap();
+
+                    this.renderQuadProgram(this.drawDye, undefined, {uDye: this.dye.ping});
+                },
+            };
+
+            var fluid = new FluidSimulation();
         </script>
     </head>
 
-    <body onload="start();">
+    <body onload="fluid.start();">
         <canvas id="canvas" width="800" height="600">
             Your browser doesn't appear to support the HTML5 <code>&lt;canvas&gt;</code> element.
         </canvas>

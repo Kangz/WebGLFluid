@@ -13,7 +13,7 @@
             // |      15       |1|
             // |       e       |s|
             // With e being a float encoded in a 6.9 fixed point format.
-            // The corresponding float is 0 if A is 0, otherwise
+            // The corresponding float is:
             //     F = sign * exp2(e) / 2^16;
             // That way the range of this representation goes from about 2^16 to 2^-16
             // which is about the range representable by a half float.
@@ -23,38 +23,33 @@
             }
 
             float floatToHalfish(float f) {
-                float sign = sign(f);
-                f = abs(f);
-
-                float exponent = log2(f * 65536.0);
-                if (exponent < 0.0) {
-                    return 0.0;
-                }
-
-                float e = round(exponent * 512.0);
+                float sign = sign(f) * 0.5 + 0.5;
+                float exponent = log2(abs(f));
+                float e = round(exponent * 512.0 + (16.0 * 512.0));
                 return e * 2.0 + sign;
             }
 
             float halfishToFloat(float a) {
-                if (a == 0.0) {
-                    return 0.0;
-                }
-
-                float e = floor(a / 2.0);
-                float sign = round(a - 2.0 * e);
-                if (sign == 0.0) {
-                    sign = -1.0;
-                }
-
-                float exponent = exp2(e / 512.0) / 65536.0;
-
-                return sign * exponent;
+                float sign = mod(a, 2.0);
+                float e = (a - sign) / 2.0;
+                float exponent = exp2(e / 512.0 - 16.0);
+                return exponent * (sign * 2.0 - 1.0);
             }
 
             // Samples a float texture using one of our halfish formats.
             // There is no linear interpolation.
-            /*float textureFloat1(sampler2D texture, vec2 texCoord) {
-                vec3 color = texture2D(texture, texCoord).xyz;
+            vec3 packRGB565(float a) {
+                float unpacked = floatToHalfish(a);
+
+                float blue = mod(unpacked, 32.0);
+                float rg = (unpacked - blue) / 32.0;
+                float green = mod(rg, 64.0);
+                float red = (rg - green) / 64.0;
+
+                return vec3(red / 31.0, green / 63.0, blue / 31.0);
+            }
+
+            float unpackRGB565(vec3 color) {
                 float red = round(color.r * 31.0);
                 float green = round(color.g * 63.0);
                 float blue = round(color.b * 31.0);
@@ -63,23 +58,53 @@
                 return halfishToFloat(unpacked);
             }
 
-            vec4 float1FragColor(float a) {
+            vec4 packRGBA8(float a) {
                 float unpacked = floatToHalfish(a);
 
-                float rg = floor(unpacked / 32.0);
-                float blue = (unpacked - rg * 32.0) / 31.0;
-                float r = floor(rg / 64.0);
-                float green = (rg - r * 64.0) / 63.0;
-                float red = r / 31.0;
-                return vec4(red, green, blue, 1.0);
-            }*/
+                float y = mod(unpacked, 256.0);
+                float x = (unpacked - y) / 256.0;
+
+                return vec4(x / 255.0, y / 255.0, 0.0, 0.0);
+            }
+
+            float unpackRGBA8(vec4 color) {
+                float x = round(color.x * 255.0);
+                float y = round(color.y * 255.0);
+
+                float unpacked = x * 256.0 + y;
+                return halfishToFloat(unpacked);
+            }
+
+            /*
+            // RGB565
             float textureFloat1(sampler2D texture, vec2 texCoord) {
-                return texture2D(texture, texCoord).x;
+                return unpackRGB565(texture2D(texture, texCoord).xyz) / 256.0;
             }
 
             vec4 float1FragColor(float a) {
-                return vec4(a, 0.0, 0.0, 0.0);
+                return vec4(packRGB565(a * 256.0), 0.0);
             }
+            */
+
+            // Regular RGBA32F
+            float textureFloat1(sampler2D texture, vec2 texCoord) {
+                return texture2D(texture, texCoord).x / 256.0;
+            }
+
+            vec4 float1FragColor(float a) {
+                return vec4(a * 256.0, 0.0, 0.0, 0.0);
+            }
+
+            /*
+            // RGBA8
+            float textureFloat1(sampler2D texture, vec2 texCoord) {
+                return unpackRGBA8(texture2D(texture, texCoord)) / 256.0;
+            }
+
+            vec4 float1FragColor(float a) {
+                return packRGBA8(a * 256.0);
+            }
+            */
 
             //----- common-fluid-compute
             @include(half-float-texture)
@@ -228,7 +253,7 @@
             precision highp float;
             uniform vec4 uValue;
             void main() {
-                if (length((gl_FragCoord.xy - vec2(50.0, 150.0)) * vec2(1.0, 1.0)) < 10.0) {
+                if (length((gl_FragCoord.xy - vec2(100.0, 300.0)) * vec2(1.0, 1.0)) < 10.0) {
                     gl_FragColor = uValue;
                 } else {
                     discard;
@@ -362,8 +387,8 @@
                     });
 
                     this.dt = 0;
-                    this.width = 400;
-                    this.height = 300;
+                    this.width = 800;
+                    this.height = 600;
 
                     this.gl.viewport(0, 0, this.width, this.height);
                     this.fbo = this.gl.createFBO();

@@ -246,15 +246,15 @@
             uniform sampler2D uDye;
             void main() {
                 vec2 advectionPos = getAdvectionPosition(uVelocity, vWorldPos);
-                gl_FragColor = vec4(texture2D(uDye, worldToTexCoord(advectionPos)).xyz * , 0.0);
+                gl_FragColor = vec4(texture2D(uDye, worldToTexCoord(advectionPos)).xyz, 0.0);
             }
 
             //----- simple-init-circle
             precision highp float;
             uniform vec4 uValue;
-            uniform vec2 uResolution;
+            varying vec2 vWorldPos;
             void main() {
-                if (length((gl_FragCoord.xy - uResolution * vec2(0.125, 0.5))) < uResolution.x / 40.0) {
+                if (length((vWorldPos - vec2(0.125, 0.5))) < 1.0 / 40.0) {
                     gl_FragColor = uValue;
                 } else {
                     discard;
@@ -323,7 +323,7 @@
             };
 
             FluidSimulation.prototype = {
-                createComputeTexture: function(components) {
+                createComputeTexture: function(components, width, height) {
                     var options = {
                         wrapS: "edge",
                         wrapT: "edge",
@@ -331,13 +331,29 @@
                         minFilter: "linear",
                         magFilter: "linear",
                     };
-                    return glExtras.makeHalfFloatComputeTexture(this.gl, components, this.simulationWidth, this.simulationHeight, options);
+                    return glExtras.makeHalfFloatComputeTexture(this.gl, components, width, height, options);
                 },
 
-                createDoubleComputeTexture: function(components) {
+                createSimulationTexture: function(components) {
+                    return this.createComputeTexture(components, this.simulationWidth, this.simulationHeight);
+                },
+
+                createDoubleSimulationTexture: function(components) {
                     return {
-                        ping: this.createComputeTexture(components),
-                        pong: this.createComputeTexture(components),
+                        ping: this.createSimulationTexture(components),
+                        pong: this.createSimulationTexture(components),
+                        swap: function() {var tmp = this.ping; this.ping = this.pong; this.pong = tmp;},
+                    };
+                },
+
+                createDisplayTexture: function(components) {
+                    return this.createComputeTexture(components, this.width, this.height);
+                },
+
+                createDoubleDisplayTexture: function(components) {
+                    return {
+                        ping: this.createDisplayTexture(components),
+                        pong: this.createDisplayTexture(components),
                         swap: function() {var tmp = this.ping; this.ping = this.pong; this.pong = tmp;},
                     };
                 },
@@ -392,13 +408,11 @@
                     this.gl = glUtils.initGL(this.canvas, {
                         extensions: ["ANGLE_instanced_arrays", "OES_texture_float", "OES_texture_float_linear"],
                     });
+                    this.frame = 0;
 
-                    this.dt = 0;
-
+                    // Misc WebGL stuff
                     this.fbo = this.gl.createFBO();
-
                     this.shaderPak = new glExtras.ShaderPak(document.getElementById("shader-src").textContent);
-
                     this.quadVertices = this.gl.createArrayBuffer(this.gl.STATIC_DRAW, [
                         -1.0, -1.0,
                          1.0, -1.0,
@@ -411,25 +425,24 @@
                     this.drawVelocity = this.createQuadProgram("draw-velocity");
                     this.drawDivergence = this.createQuadProgram("draw-divergence");
                     this.drawDivergence = this.createQuadProgram("draw-pressure");
-                    this.drawDye = this.createQuadProgram("draw-dye");
 
                     // Compute programs
                     this.advectVelocity = this.createQuadProgram("advect-velocity");
-                    this.advectDye = this.createQuadProgram("advect-dye");
                     this.applyForces = this.createQuadProgram("apply-forces");
                     this.computeDivergence = this.createQuadProgram("compute-divergence");
                     this.solvePressure = this.createQuadProgram("solve-pressure");
                     this.substractPressureGradient = this.createQuadProgram("substract-pressure-gradient");
 
                     // Create the compute textures
-                    this.fluidVelocity = this.createDoubleComputeTexture(2);
+                    this.fluidVelocity = this.createDoubleSimulationTexture(2);
                     this.fluidVelocity.ping.clear([0.0, 0.0, 0.0, 0.0]);
 
-                    this.fluidDivergence = this.createComputeTexture(1);
-                    this.fluidPressure = this.createDoubleComputeTexture(1);
-                    this.fluidForce = this.createComputeTexture(2);
+                    this.fluidDivergence = this.createSimulationTexture(1);
+                    this.fluidPressure = this.createDoubleSimulationTexture(1);
+                    this.fluidForce = this.createSimulationTexture(2);
 
-                    this.dye = this.createDoubleComputeTexture(3);
+                    // Init the rest
+                    this.initDye();
 
                     // Run the simulation loop
                     var self = this;
@@ -437,7 +450,7 @@
                     var doFrame = function(timestamp) {
                         if (self.lastTimestamp != 0) {
                             var dt = timestamp - self.lastTimestamp;
-                            self.frame(dt / 1000);
+                            self.runFrame(dt / 1000);
                         }
                         self.lastTimestamp = timestamp;
                         window.requestAnimationFrame(doFrame);
@@ -445,49 +458,87 @@
                     window.requestAnimationFrame(doFrame);
                 },
 
-                frame: function(dt) {
+                runFrame: function(dt) {
                     this.dt = Math.min(dt, 0.01);
+                    this.frame ++;
 
-                    this.gl.viewport(0, 0, this.simulationWidth, this.simulationHeight);
+                    // Add inputs to the simulation
+                    this.doAddForces();
+                    this.doAddDye();
 
-                    this.fluidForce.clear([0.0, 0.0, 0.0, 0.0]);
-                    if (!this.first) {
-                        this.counter = 0;
-                        this.first = true;
-                    }
+                    // Run the fluid simulation
+                    this.doSimulation();
 
-                    if (this.counter ++ < this.config.emitFrames) {
-                        this.renderQuadProgram(this.simpleInitCircle, this.fluidForce, {uValue: [10.0, 0.0, 0.0, 0.0]});
+                    // Run the rest of the simulation
+                    this.doUpdateDye();
 
+                    // Draw
+                    this.doDrawDye();
+                },
+
+                //----- DYE
+                initDye: function(){
+                    this.drawDye = this.createQuadProgram("draw-dye");
+                    this.advectDye = this.createQuadProgram("advect-dye");
+                    this.dye = this.createDoubleDisplayTexture(3);
+                },
+
+                doAddDye: function() {
+                    this.gl.viewport(0, 0, this.width, this.height);
+                    if (this.frame < this.config.emitFrames) {
                         this.gl.enable(this.gl.BLEND);
                         this.renderQuadProgram(this.simpleInitCircle, this.dye.ping, {uValue: [0.2, 0.7, 0.9, 1.0]});
-                        //this.dye.swap();
                         this.gl.disable(this.gl.BLEND);
                     }
+                },
 
+                doUpdateDye: function() {
+                    this.gl.viewport(0, 0, this.width, this.height);
+                    this.renderQuadProgram(this.advectDye, this.dye.pong, {uDye: this.dye.ping});
+                    this.dye.swap();
+                },
+
+                doDrawDye: function() {
+                    this.gl.viewport(0, 0, this.width, this.height);
+                    this.renderQuadProgram(this.drawDye, undefined, {uDye: this.dye.ping});
+                },
+
+                //----- SIMULATION
+                doAddForces: function() {
+                    this.gl.viewport(0, 0, this.simulationWidth, this.simulationHeight);
+                    // TODO blendmode add
+                    if (this.frame < this.config.emitFrames) {
+                        this.fluidForce.clear([0.0, 0.0, 0.0, 0.0]);
+                        this.renderQuadProgram(this.simpleInitCircle, this.fluidForce, {uValue: [10.0, 0.0, 0.0, 0.0]});
+                    }
+                },
+
+                doSimulation: function() {
+                    this.gl.viewport(0, 0, this.simulationWidth, this.simulationHeight);
+
+                    // Advect velocity
                     this.renderQuadProgram(this.advectVelocity, this.fluidVelocity.pong);
                     this.fluidVelocity.swap();
 
+                    // Add forces
                     this.renderQuadProgram(this.applyForces, this.fluidVelocity.pong);
                     this.fluidVelocity.swap();
 
+                    // Compute divergence
                     this.renderQuadProgram(this.computeDivergence, this.fluidDivergence);
 
+                    // Compute pressure with jacobi iterations
                     this.fluidPressure.ping.clear([0.0, 0.0, 0.0, 0.0]);
                     for (var i = 0; i < this.config.numJacobiIters; i++) {
                         this.renderQuadProgram(this.solvePressure, this.fluidPressure.pong);
                         this.fluidPressure.swap();
                     }
 
+                    // Make the velocity divergence free
                     this.renderQuadProgram(this.substractPressureGradient, this.fluidVelocity.pong);
                     this.fluidVelocity.swap();
-
-                    this.renderQuadProgram(this.advectDye, this.dye.pong, {uDye: this.dye.ping});
-                    this.dye.swap();
-
-                    this.gl.viewport(0, 0, this.width, this.height);
-                    this.renderQuadProgram(this.drawDye, undefined, {uDye: this.dye.ping});
                 },
+
             };
 
             var fluid;

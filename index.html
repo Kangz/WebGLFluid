@@ -565,6 +565,7 @@
                     var self = this;
                     this.api = new FluidAPI();
                     this.api.init("canvas");
+                    window.fluidApi = this.api;
 
                     this.lastTimestamp = 0;
                     var frameLoop = function(timestamp) {

@@ -11,108 +11,8 @@
         <script type="text/javascript" src="lib/glExtras.js"></script>
         <script type="text/javascript" src="lib/glUtils.js"></script>
 
-        <script id="shader-src" type="x-shader/x-fragment">
-            //----- half-float-texture
-            // A halfish A is a float encoded on 16 bits as follows
-            // |      15       |1|
-            // |       e       |s|
-            // With e being a float encoded in a 6.9 fixed point format.
-            // The corresponding float is:
-            //     F = sign * exp2(e) / 2^16;
-            // That way the range of this representation goes from about 2^16 to 2^-16
-            // which is about the range representable by a half float.
-
-            float round(float f) {
-                return floor(f + 0.5);
-            }
-
-            float floatToHalfish(float f) {
-                float sign = sign(f) * 0.5 + 0.5;
-                float exponent = log2(abs(f));
-                float e = round(exponent * 512.0 + (16.0 * 512.0));
-                return e * 2.0 + sign;
-            }
-
-            float halfishToFloat(float a) {
-                float sign = mod(a, 2.0);
-                float e = (a - sign) / 2.0;
-                float exponent = exp2(e / 512.0 - 16.0);
-                return exponent * (sign * 2.0 - 1.0);
-            }
-
-            // Samples a float texture using one of our halfish formats.
-            // There is no linear interpolation.
-            vec3 packRGB565(float a) {
-                float unpacked = floatToHalfish(a);
-
-                float blue = mod(unpacked, 32.0);
-                float rg = (unpacked - blue) / 32.0;
-                float green = mod(rg, 64.0);
-                float red = (rg - green) / 64.0;
-
-                return vec3(red / 31.0, green / 63.0, blue / 31.0);
-            }
-
-            float unpackRGB565(vec3 color) {
-                float red = round(color.r * 31.0);
-                float green = round(color.g * 63.0);
-                float blue = round(color.b * 31.0);
-
-                float unpacked = ((red * 64.0) + green) * 32.0 + blue;
-                return halfishToFloat(unpacked);
-            }
-
-            vec4 packRGBA8(float a) {
-                float unpacked = floatToHalfish(a);
-
-                float y = mod(unpacked, 256.0);
-                float x = (unpacked - y) / 256.0;
-
-                return vec4(x / 255.0, y / 255.0, 0.0, 0.0);
-            }
-
-            float unpackRGBA8(vec4 color) {
-                float x = round(color.x * 255.0);
-                float y = round(color.y * 255.0);
-
-                float unpacked = x * 256.0 + y;
-                return halfishToFloat(unpacked);
-            }
-
-            /*
-            // RGB565
-            float textureFloat1(sampler2D texture, vec2 texCoord) {
-                return unpackRGB565(texture2D(texture, texCoord).xyz) / 256.0;
-            }
-
-            vec4 float1FragColor(float a) {
-                return vec4(packRGB565(a * 256.0), 0.0);
-            }
-            */
-
-            // Regular RGBA32F
-            float textureFloat1(sampler2D texture, vec2 texCoord) {
-                return texture2D(texture, texCoord).x / 256.0;
-            }
-
-            vec4 float1FragColor(float a) {
-                return vec4(a * 256.0, 0.0, 0.0, 0.0);
-            }
-
-            /*
-            // RGBA8
-            float textureFloat1(sampler2D texture, vec2 texCoord) {
-                return unpackRGBA8(texture2D(texture, texCoord)) / 256.0;
-            }
-
-            vec4 float1FragColor(float a) {
-                return packRGBA8(a * 256.0);
-            }
-            */
-
+        <script id="shader-src" type="x-shader/x-shaderpak">
             //----- common-fluid-compute
-            @include(half-float-texture)
-
             uniform sampler2D uVelocity;
             uniform sampler2D uDivergence;
             uniform sampler2D uPressure;
@@ -173,7 +73,7 @@
                     offset.y = -uInvResolution.y;
                 }
 
-                return textureFloat1(pressure, texCoord + offset);
+                return texture2D(pressure, texCoord + offset).x;
             }
 
             vec2 getAdvectionPosition(sampler2D velocity, vec2 worldPos) {
@@ -211,7 +111,7 @@
                 vec2 top = sampleVelocity(uVelocity, vTexCoord + vec2(0.0, uInvResolution.y));
 
                 float divergence = 0.5 / uCellSize * (right.x - left.x + top.y - bottom.y);
-                gl_FragColor = float1FragColor(divergence);
+                gl_FragColor = vec4(divergence, 0.0, 0.0, 0.0);
             }
 
             //----- solve-pressure
@@ -224,9 +124,9 @@
                 float bottom = samplePressure(uPressure, vTexCoord - vec2(0.0, uInvResolution.y));
                 float top = samplePressure(uPressure, vTexCoord + vec2(0.0, uInvResolution.y));
 
-                float divergence = textureFloat1(uDivergence, vTexCoord);
+                float divergence = texture2D(uDivergence, vTexCoord).x;
                 float pressure = (left + right + bottom + top - divergence * uCellSize * uCellSize) / 4.0;
-                gl_FragColor = float1FragColor(pressure);
+                gl_FragColor = vec4(pressure, 0.0, 0.0, 0.0);
             }
 
             //----- substract-pressure-gradient

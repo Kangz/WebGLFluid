@@ -469,6 +469,8 @@
                 this.lastMousePos = [0.0, 0.0];
                 this.mousePos = [0.0, 0.0];
                 this.mouseDown = false;
+                this.touches = {};
+                this.touchSegments = [];
 
                 this.segments = [];
             }
@@ -547,26 +549,68 @@
                     canvas.addEventListener("mousedown", function(e){self.updateMouse(e)});
                     canvas.addEventListener("mouseup", function(e){self.updateMouse(e)});
                     canvas.addEventListener("mousemove", function(e){self.updateMouse(e)});
+
+                    canvas.addEventListener("touchstart", function(e){self.onTouchStart(e);});
+                    canvas.addEventListener("touchend", function(e){self.onTouchEnd(e);});
+                    canvas.addEventListener("touchcancel", function(e){self.onTouchEnd(e);});
+                    canvas.addEventListener("touchmove", function(e){self.onTouchMove(e);});
                 },
 
                 frame: function(dt) {
                     if (this.mouseDown) {
-                        var mouseMove = [this.mousePos[0] - this.lastMousePos[0], this.mousePos[1] - this.lastMousePos[1]];
-                        var mouseForce = [mouseMove[0] / dt / dt, mouseMove[1] / dt / dt];
-
-                        this.segments.push({
-                            start: this.lastMousePos,
-                            end: this.mousePos,
-                            color: [0.2, 0.7, 0.9, 1.0],
-                            force: mouseForce,
-                        });
+                        this.touchSegments.push([[this.lastMousePos[0], this.lastMousePos[1]], [this.mousePos[0], this.mousePos[1]]]);
                     }
 
+                    for (var id in this.touches) {
+                        var touch = this.touches[id];
+                        if (touch.length > 1) {
+                            this.touchSegments.push(touch);
+                            this.touches[id] = [touch[touch.length - 1]];
+                        }
+                    }
                     this.lastMousePos = this.mousePos;
+
+                    for (var i in this.touchSegments) {
+                        var segment = this.touchSegments[i];
+
+                        var move = [segment[1][0] - segment[0][0], segment[1][1] - segment[0][1]];
+                        var force = [move[0] / dt / dt, move[1] / dt / dt];
+
+                        this.segments.push({
+                            start: segment[0],
+                            end: segment[1],
+                            color: [0.2, 0.7, 0.9, 1.0],
+                            force: force,
+                        });
+                    }
 
                     this.fluid.runFrame(dt);
 
                     this.segments = [];
+                    this.touchSegments = [];
+                },
+
+                onTouchStart: function(e) {
+                    for (var i = 0; i < e.changedTouches.length; i++) {
+                        var touch = e.changedTouches[i];
+                        this.touches[touch.identifier] = [this.fluid.canvasPosToWorld([touch.clientX, touch.clientY])];
+                    }
+                },
+
+                onTouchMove: function(e) {
+                    for (var i = 0; i < e.changedTouches.length; i++) {
+                        var touch = e.changedTouches[i];
+                        this.touches[touch.identifier].push(this.fluid.canvasPosToWorld([touch.clientX, touch.clientY]));
+                    }
+                },
+
+                onTouchEnd: function(e) {
+                    for (var i = 0; i < e.changedTouches.length; i++) {
+                        var touch = e.changedTouches[i];
+                        this.touches[touch.identifier].push(this.fluid.canvasPosToWorld([touch.clientX, touch.clientY]));
+                        this.touchSegments.push(this.touches[touch.identifier]);
+                        this.touches[touch.identifier] = [];
+                    }
                 },
 
                 updateMouse: function(e) {

@@ -18,7 +18,6 @@
             uniform sampler2D uPressure;
             uniform sampler2D uForce;
 
-            uniform float uDt;
             uniform vec2 uResolution;
             uniform vec2 uInvResolution;
             uniform vec2 uAspectRatio;
@@ -33,6 +32,23 @@
 
             vec2 texCoordToWorld(vec2 texCoord) {
                 return (texCoord - vec2(0.5, 0.5)) * 2.0 * uAspectRatio;
+            }
+
+            vec4 texture2DLinear(sampler2D texture, vec2 texCoord, vec2 textureResolution) {
+                vec2 scaledTexCoord = texCoord * textureResolution;
+                vec4 pixelCoords;
+                pixelCoords.xy = floor(scaledTexCoord - vec2(0.5, 0.5)) + vec2(0.5, 0.5);
+                pixelCoords.zw = pixelCoords.xy + vec2(1.0, 1.0);
+
+                vec2 r = scaledTexCoord - pixelCoords.xy;
+                pixelCoords /= textureResolution.xyxy;
+
+                vec4 a11 = texture2D(texture, pixelCoords.xy);
+                vec4 a21 = texture2D(texture, pixelCoords.zy);
+                vec4 a12 = texture2D(texture, pixelCoords.xw);
+                vec4 a22 = texture2D(texture, pixelCoords.zw);
+
+                return mix(mix(a11, a21, r.x), mix(a12, a22, r.x), r.y);
             }
 
             vec2 sampleVelocity(sampler2D velocity, vec2 texCoord) {
@@ -55,7 +71,7 @@
                     multiplier.y = -1.0;
                 }
 
-                return multiplier * texture2D(velocity, texCoord + offset).xy;
+                return multiplier * texture2DLinear(velocity, texCoord + offset, uResolution).xy;
             }
 
             float samplePressure(sampler2D pressure, vec2 texCoord) {
@@ -76,40 +92,26 @@
                 return texture2D(pressure, texCoord + offset).x;
             }
 
-            vec2 getAdvectionPosition(sampler2D velocity, vec2 worldPos) {
-                //TODO try MacCormack
-                return worldPos - sampleVelocity(uVelocity, worldToTexCoord(worldPos)) * uDt;
-            }
-
-            vec4 texture2DLinear(sampler2D texture, vec2 texCoord, vec2 textureResolution) {
-                vec2 scaledTexCoord = texCoord * textureResolution;
-                vec4 pixelCoords;
-                pixelCoords.xy = floor(scaledTexCoord - vec2(0.5, 0.5)) + vec2(0.5, 0.5);
-                pixelCoords.zw = pixelCoords.xy + vec2(1.0, 1.0);
-
-                vec2 r = scaledTexCoord - pixelCoords.xy;
-                pixelCoords /= textureResolution.xyxy;
-
-                vec4 a11 = texture2D(texture, pixelCoords.xy);
-                vec4 a21 = texture2D(texture, pixelCoords.zy);
-                vec4 a12 = texture2D(texture, pixelCoords.xw);
-                vec4 a22 = texture2D(texture, pixelCoords.zw);
-
-                return mix(mix(a11, a21, r.x), mix(a12, a22, r.x), r.y);
+            vec2 getAdvectionPosition(sampler2D velocity, vec2 worldPos, float dt) {
+                return worldPos - sampleVelocity(uVelocity, worldToTexCoord(worldPos)) * dt;
             }
 
             //----- advect-velocity
             precision highp float;
             @include(common-fluid-compute)
 
+            uniform float uDt;
+
             void main() {
-                vec2 advectionPos = getAdvectionPosition(uVelocity, vWorldPos);
-                gl_FragColor = vec4(texture2DLinear(uVelocity, worldToTexCoord(advectionPos), uResolution).xy, 0.0, 0.0);
+                vec2 advectionPos = getAdvectionPosition(uVelocity, vWorldPos, uDt);
+                gl_FragColor = vec4(sampleVelocity(uVelocity, worldToTexCoord(advectionPos).xy), 0.0, 0.0);
             }
 
             //----- apply-forces
             precision highp float;
             @include(common-fluid-compute)
+
+            uniform float uDt;
 
             void main() {
                 vec2 velocity = sampleVelocity(uVelocity, vTexCoord);
@@ -164,26 +166,13 @@
             precision highp float;
             @include(common-fluid-compute)
             uniform vec2 uDyeResolution;
+            uniform float uDt;
 
             uniform sampler2D uDye;
             void main() {
-                vec2 advectionPos = getAdvectionPosition(uVelocity, vWorldPos);
+                vec2 advectionPos = getAdvectionPosition(uVelocity, vWorldPos, uDt);
                 vec3 oldDye = texture2DLinear(uDye, worldToTexCoord(advectionPos), uDyeResolution).xyz;
                 gl_FragColor = vec4(oldDye * exp(uDt * log(1.0/1.3)), 0.0);
-            }
-
-            //----- simple-init-circle
-            precision highp float;
-            uniform vec4 uValue;
-            uniform vec2 uTargetPos;
-            uniform float uRadius;
-            varying vec2 vWorldPos;
-            void main() {
-                if (length(vWorldPos - uTargetPos) < uRadius) {
-                    gl_FragColor = uValue;
-                } else {
-                    discard;
-                }
             }
 
             //----- init-segment
@@ -196,6 +185,7 @@
                 float factor = clamp(5.0 - 5.0 * 2.0 * length(centeredTexCoord), 0.0, 1.0);
                 gl_FragColor = uValue * vec4(1.0, 1.0, 1.0, factor);
             }
+
             //----- draw-velocity
             precision highp float;
             uniform sampler2D uVelocity;
@@ -371,7 +361,6 @@
                     ]);
 
                     // Testing programs
-                    this.simpleInitCircle = this.createQuadProgram("simple-init-circle");
                     this.drawVelocity = this.createQuadProgram("draw-velocity");
                     this.drawDivergence = this.createQuadProgram("draw-divergence");
                     this.drawDivergence = this.createQuadProgram("draw-pressure");
@@ -435,6 +424,7 @@
                     this.renderQuadProgram(this.advectDye, this.dye.pong, {
                         uDye: this.dye.ping,
                         uDyeResolution: [this.width, this.height],
+                        uDt: this.dt,
                     });
                     this.dye.swap();
                 },
@@ -463,11 +453,11 @@
                     this.gl.viewport(0, 0, this.simulationWidth, this.simulationHeight);
 
                     // Advect velocity
-                    this.renderQuadProgram(this.advectVelocity, this.fluidVelocity.pong);
+                    this.renderQuadProgram(this.advectVelocity, this.fluidVelocity.pong, {uDt: this.dt});
                     this.fluidVelocity.swap();
 
                     // Add forces
-                    this.renderQuadProgram(this.applyForces, this.fluidVelocity.pong);
+                    this.renderQuadProgram(this.applyForces, this.fluidVelocity.pong, {uDt: this.dt});
                     this.fluidVelocity.swap();
 
                     // Compute divergence

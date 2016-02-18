@@ -304,7 +304,7 @@
 
                 canvasPosToWorld: function(pos) {
                     return [
-                        (pos[0] / this.width * 2.0 - + 1.0) / this.aspectRatio[0],
+                        (pos[0] / this.width * 2.0 - + 1.0) * this.aspectRatio[0],
                         (pos[1] / this.height * -2.0 + 1.0) * this.aspectRatio[1],
                     ];
                 },
@@ -478,11 +478,11 @@
             Game.prototype = {
                 start: function() {
                     var self = this;
-                    var canvas = document.getElementById("canvas");
-                    canvas.width = window.innerWidth;
-                    canvas.height = window.innerHeight;
+                    this.canvas = document.getElementById("canvas");
+                    this.canvas.width = window.innerWidth;
+                    this.canvas.height = window.innerHeight;
 
-                    this.fluid = new FluidSimulation(document.getElementById("canvas"), {
+                    this.fluid = new FluidSimulation(this.canvas, {
                         simulationScale: 400 / Math.max(canvas.width, canvas.height),
                         numJacobiIters: 50,
                     });
@@ -495,7 +495,7 @@
                         var moveVector = [segment.end[0] - segment.start[0], segment.end[1] - segment.start[1]];
                         var length = vec2.length(moveVector);
 
-                        var scaleY = self.fluid.canvasSizeToWorld(10.0);
+                        var scaleY = self.fluid.canvasSizeToWorld(segment.width);
                         var scaleX = length;
 
                         var angle = Math.atan2(moveVector[1], moveVector[0]);
@@ -503,10 +503,12 @@
 
                         var transform = mat3.create();
                         mat3.identity(transform);
-                        mat3.scale(transform, transform, self.fluid.aspectRatio);
+                        mat3.scale(transform, transform, [1.0 / self.fluid.aspectRatio[0], 1.0 / self.fluid.aspectRatio[1]]);
                         mat3.translate(transform, transform, center);
                         mat3.rotate(transform, transform, angle);
                         mat3.scale(transform, transform, [scaleX, scaleY]);
+
+                        console.log(segment.end);
 
                         return transform;
                     };
@@ -581,6 +583,7 @@
                             end: segment[1],
                             color: [0.2, 0.7, 0.9, 1.0],
                             force: force,
+                            width: Math.max(this.canvas.width, this.canvas.height) / 100.0,
                         });
                     }
 
@@ -591,6 +594,7 @@
                 },
 
                 onTouchStart: function(e) {
+                    e.preventDefault();
                     for (var i = 0; i < e.changedTouches.length; i++) {
                         var touch = e.changedTouches[i];
                         this.touches[touch.identifier] = [this.fluid.canvasPosToWorld([touch.clientX, touch.clientY])];
@@ -598,6 +602,7 @@
                 },
 
                 onTouchMove: function(e) {
+                    e.preventDefault();
                     for (var i = 0; i < e.changedTouches.length; i++) {
                         var touch = e.changedTouches[i];
                         this.touches[touch.identifier].push(this.fluid.canvasPosToWorld([touch.clientX, touch.clientY]));
@@ -605,6 +610,7 @@
                 },
 
                 onTouchEnd: function(e) {
+                    e.preventDefault();
                     for (var i = 0; i < e.changedTouches.length; i++) {
                         var touch = e.changedTouches[i];
                         this.touches[touch.identifier].push(this.fluid.canvasPosToWorld([touch.clientX, touch.clientY]));

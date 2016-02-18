@@ -168,7 +168,8 @@
             uniform sampler2D uDye;
             void main() {
                 vec2 advectionPos = getAdvectionPosition(uVelocity, vWorldPos);
-                gl_FragColor = vec4(texture2DLinear(uDye, worldToTexCoord(advectionPos), uDyeResolution).xyz, 0.0);
+                vec3 oldDye = texture2DLinear(uDye, worldToTexCoord(advectionPos), uDyeResolution).xyz;
+                gl_FragColor = vec4(oldDye * exp(uDt * log(1.0/1.3)), 0.0);
             }
 
             //----- simple-init-circle

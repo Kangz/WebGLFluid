@@ -465,20 +465,16 @@
                 },
             };
 
-            var Game = function() {
-                this.lastMousePos = [0.0, 0.0];
-                this.mousePos = [0.0, 0.0];
-                this.mouseDown = false;
-                this.touches = {};
-                this.touchSegments = [];
-
+            var FluidAPI = function(canvasId) {
                 this.segments = [];
             }
 
-            Game.prototype = {
-                start: function() {
+            FluidAPI.prototype = {
+                init: function(canvasId) {
                     var self = this;
-                    this.canvas = document.getElementById("canvas");
+                    this.segments = [];
+
+                    this.canvas = document.getElementById(canvasId);
                     this.canvas.width = window.innerWidth;
                     this.canvas.height = window.innerHeight;
 
@@ -508,8 +504,6 @@
                         mat3.rotate(transform, transform, angle);
                         mat3.scale(transform, transform, [scaleX, scaleY]);
 
-                        console.log(segment.end);
-
                         return transform;
                     };
 
@@ -527,13 +521,50 @@
                     this.fluid.onAddForces = function(forcesOut) {
                         for (var i in self.segments) {
                             var segment = self.segments[i];
+                            var force = [segment.move[0] / this.dt / this.dt, segment.move[1] / this.dt / this.dt];
 
                             self.fluid.renderQuadProgram(self.initSegment, forcesOut, {
-                                uValue: segment.force.concat([0.0, 1.0]),
+                                uValue: force.concat([0.0, 1.0]),
                                 uTransform: getTransformForSegment(segment),
                             });
                         }
                     };
+                },
+
+                frame: function(dt) {
+                    this.dt = dt;
+                    this.fluid.runFrame(dt);
+                    this.segments = [];
+                },
+
+                addSegment: function(start, end, color, width) {
+                    start = this.fluid.canvasPosToWorld(start);
+                    end = this.fluid.canvasPosToWorld(end);
+                    var move = [end[0] - start[0], end[1] - start[1]];
+
+                    this.segments.push({
+                        start: start,
+                        end: end,
+                        color: color,
+                        move: move,
+                        width: width,
+                    });
+                },
+            };
+
+            var Game = function() {
+                this.lastMousePos = [0.0, 0.0];
+                this.mousePos = [0.0, 0.0];
+                this.mouseDown = false;
+                this.touches = {};
+                this.touchSegments = [];
+            }
+
+            Game.prototype = {
+                start: function() {
+                    var self = this;
+                    this.api = new FluidAPI();
+                    this.api.init("canvas");
 
                     this.lastTimestamp = 0;
                     var frameLoop = function(timestamp) {
@@ -572,22 +603,14 @@
                     }
                     this.lastMousePos = this.mousePos;
 
+                    var width = Math.max(this.api.canvas.width, this.api.canvas.height) / 100.0;
+                    var color = [0.2, 0.7, 0.9, 1.0];
+
                     for (var i in this.touchSegments) {
                         var segment = this.touchSegments[i];
-
-                        var move = [segment[1][0] - segment[0][0], segment[1][1] - segment[0][1]];
-                        var force = [move[0] / dt / dt, move[1] / dt / dt];
-
-                        this.segments.push({
-                            start: segment[0],
-                            end: segment[1],
-                            color: [0.2, 0.7, 0.9, 1.0],
-                            force: force,
-                            width: Math.max(this.canvas.width, this.canvas.height) / 100.0,
-                        });
+                        this.api.addSegment(segment[0], segment[1], color, width);
                     }
-
-                    this.fluid.runFrame(dt);
+                    this.api.frame(dt);
 
                     this.segments = [];
                     this.touchSegments = [];
@@ -597,7 +620,7 @@
                     e.preventDefault();
                     for (var i = 0; i < e.changedTouches.length; i++) {
                         var touch = e.changedTouches[i];
-                        this.touches[touch.identifier] = [this.fluid.canvasPosToWorld([touch.clientX, touch.clientY])];
+                        this.touches[touch.identifier] = [touch.clientX, touch.clientY];
                     }
                 },
 
@@ -605,7 +628,7 @@
                     e.preventDefault();
                     for (var i = 0; i < e.changedTouches.length; i++) {
                         var touch = e.changedTouches[i];
-                        this.touches[touch.identifier].push(this.fluid.canvasPosToWorld([touch.clientX, touch.clientY]));
+                        this.touches[touch.identifier].push([touch.clientX, touch.clientY]);
                     }
                 },
 
@@ -613,7 +636,7 @@
                     e.preventDefault();
                     for (var i = 0; i < e.changedTouches.length; i++) {
                         var touch = e.changedTouches[i];
-                        this.touches[touch.identifier].push(this.fluid.canvasPosToWorld([touch.clientX, touch.clientY]));
+                        this.touches[touch.identifier].push([touch.clientX, touch.clientY]);
                         this.touchSegments.push(this.touches[touch.identifier]);
                         this.touches[touch.identifier] = [];
                     }
@@ -621,7 +644,7 @@
 
                 updateMouse: function(e) {
                     this.mouseDown = e.buttons & 1;
-                    this.mousePos = this.fluid.canvasPosToWorld([e.clientX, e.clientY]);
+                    this.mousePos = [e.clientX, e.clientY];
                 },
             };
 

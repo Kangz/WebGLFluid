@@ -167,6 +167,16 @@
                 }
             }
 
+            //----- init-segment
+            precision highp float;
+            varying vec2 vTexCoord;
+            uniform vec4 uValue;
+
+            void main() {
+                vec2 centeredTexCoord = vTexCoord - vec2(0.5);
+                float factor = clamp(5.0 - 5.0 * 2.0 * length(centeredTexCoord), 0.0, 1.0);
+                gl_FragColor = uValue * vec4(1.0, 1.0, 1.0, factor);
+            }
             //----- draw-velocity
             precision highp float;
             uniform sampler2D uVelocity;
@@ -209,8 +219,8 @@
             varying vec2 vWorldPos;
 
             void main(void) {
+                vTexCoord = aPosition / 2.0 + vec2(0.5, 0.5);
                 vec2 position = (uTransform * vec3(aPosition, 1.0)).xy;
-                vTexCoord = position / 2.0 + vec2(0.5, 0.5);
                 vWorldPos = position * uAspectRatio;
                 gl_Position = vec4(position, 0.0, 1.0);
             }
@@ -294,7 +304,7 @@
 
                 canvasPosToWorld: function(pos) {
                     return [
-                        (pos[0] / this.width * 2.0 - 1.0) * this.aspectRatio[0],
+                        (pos[0] / this.width * 2.0 - + 1.0) / this.aspectRatio[0],
                         (pos[1] / this.height * -2.0 + 1.0) * this.aspectRatio[1],
                     ];
                 },
@@ -394,6 +404,8 @@
                 doAddDye: function() {
                     this.gl.viewport(0, 0, this.width, this.height);
                     this.gl.enable(this.gl.BLEND);
+                    this.gl.blendEquation(this.gl.FUNC_ADD);
+                    this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
 
                     this.onAddDye && this.onAddDye(this.dye.ping);
 
@@ -413,10 +425,17 @@
 
                 //----- SIMULATION
                 doAddForces: function() {
-                    this.gl.viewport(0, 0, this.simulationWidth, this.simulationHeight);
                     this.fluidForce.clear([0.0, 0.0, 0.0, 0.0]);
-                    // TODO blendmode add
+
+                    this.gl.viewport(0, 0, this.simulationWidth, this.simulationHeight);
+
+                    this.gl.enable(this.gl.BLEND);
+                    this.gl.blendEquation(this.gl.FUNC_ADD);
+                    this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE);
+
                     this.onAddForces && this.onAddForces(this.fluidForce);
+
+                    this.gl.disable(this.gl.BLEND);
                 },
 
                 doSimulation: function() {
@@ -449,8 +468,9 @@
             var Game = function() {
                 this.lastMousePos = [0.0, 0.0];
                 this.mousePos = [0.0, 0.0];
-                this.mouseForce = [0.0, 0.0];
                 this.mouseDown = false;
+
+                this.segments = [];
             }
 
             Game.prototype = {
@@ -465,29 +485,51 @@
                         numJacobiIters: 50,
                     });
 
+                    this.fluid.start();
+
+                    this.initSegment = this.fluid.createQuadProgram("init-segment");
+
+                    var getTransformForSegment = function(segment) {
+                        var moveVector = [segment.end[0] - segment.start[0], segment.end[1] - segment.start[1]];
+                        var length = vec2.length(moveVector);
+
+                        var scaleY = self.fluid.canvasSizeToWorld(10.0);
+                        var scaleX = length;
+
+                        var angle = Math.atan2(moveVector[1], moveVector[0]);
+                        var center = [(segment.start[0] + moveVector[0] / 2), segment.start[1] + moveVector[1] / 2];
+
+                        var transform = mat3.create();
+                        mat3.identity(transform);
+                        mat3.scale(transform, transform, self.fluid.aspectRatio);
+                        mat3.translate(transform, transform, center);
+                        mat3.rotate(transform, transform, angle);
+                        mat3.scale(transform, transform, [scaleX, scaleY]);
+
+                        return transform;
+                    };
+
                     this.fluid.onAddDye = function(dyeOut) {
-                        if (!self.mouseDown) {
-                            return;
+                        for (var i in self.segments) {
+                            var segment = self.segments[i];
+
+                            self.fluid.renderQuadProgram(self.initSegment, dyeOut, {
+                                uValue: segment.color,
+                                uTransform: getTransformForSegment(segment),
+                            });
                         }
-                        self.fluid.renderQuadProgram(self.fluid.simpleInitCircle, dyeOut, {
-                            uValue: [0.2, 0.7, 0.9, 1.0],
-                            uTargetPos: self.mousePos,
-                            uRadius: 0.02,
-                        });
                     };
 
                     this.fluid.onAddForces = function(forcesOut) {
-                        if (!self.mouseDown) {
-                            return;
-                        }
-                        self.fluid.renderQuadProgram(self.fluid.simpleInitCircle, forcesOut, {
-                            uValue: self.mouseForce.concat([0.0, 0.0]),
-                            uTargetPos: self.mousePos,
-                            uRadius: 0.02,
-                        });
-                    };
+                        for (var i in self.segments) {
+                            var segment = self.segments[i];
 
-                    this.fluid.start();
+                            self.fluid.renderQuadProgram(self.initSegment, forcesOut, {
+                                uValue: segment.force.concat([0.0, 1.0]),
+                                uTransform: getTransformForSegment(segment),
+                            });
+                        }
+                    };
 
                     this.lastTimestamp = 0;
                     var frameLoop = function(timestamp) {
@@ -508,11 +550,23 @@
                 },
 
                 frame: function(dt) {
-                    this.mouseForce[0] = (this.mousePos[0] - this.lastMousePos[0]) / dt / dt;
-                    this.mouseForce[1] = (this.mousePos[1] - this.lastMousePos[1]) / dt / dt;
+                    if (this.mouseDown) {
+                        var mouseMove = [this.mousePos[0] - this.lastMousePos[0], this.mousePos[1] - this.lastMousePos[1]];
+                        var mouseForce = [mouseMove[0] / dt / dt, mouseMove[1] / dt / dt];
+
+                        this.segments.push({
+                            start: this.lastMousePos,
+                            end: this.mousePos,
+                            color: [0.2, 0.7, 0.9, 1.0],
+                            force: mouseForce,
+                        });
+                    }
+
                     this.lastMousePos = this.mousePos;
 
                     this.fluid.runFrame(dt);
+
+                    this.segments = [];
                 },
 
                 updateMouse: function(e) {

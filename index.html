@@ -81,13 +81,30 @@
                 return worldPos - sampleVelocity(uVelocity, worldToTexCoord(worldPos)) * uDt;
             }
 
+            vec4 texture2DLinear(sampler2D texture, vec2 texCoord, vec2 textureResolution) {
+                vec2 scaledTexCoord = texCoord * textureResolution;
+                vec4 pixelCoords;
+                pixelCoords.xy = floor(scaledTexCoord - vec2(0.5, 0.5)) + vec2(0.5, 0.5);
+                pixelCoords.zw = pixelCoords.xy + vec2(1.0, 1.0);
+
+                vec2 r = scaledTexCoord - pixelCoords.xy;
+                pixelCoords /= textureResolution.xyxy;
+
+                vec4 a11 = texture2D(texture, pixelCoords.xy);
+                vec4 a21 = texture2D(texture, pixelCoords.zy);
+                vec4 a12 = texture2D(texture, pixelCoords.xw);
+                vec4 a22 = texture2D(texture, pixelCoords.zw);
+
+                return mix(mix(a11, a21, r.x), mix(a12, a22, r.x), r.y);
+            }
+
             //----- advect-velocity
             precision highp float;
             @include(common-fluid-compute)
 
             void main() {
                 vec2 advectionPos = getAdvectionPosition(uVelocity, vWorldPos);
-                gl_FragColor = vec4(texture2D(uVelocity, worldToTexCoord(advectionPos)).xy, 0.0, 0.0);
+                gl_FragColor = vec4(texture2DLinear(uVelocity, worldToTexCoord(advectionPos), uResolution).xy, 0.0, 0.0);
             }
 
             //----- apply-forces
@@ -146,11 +163,12 @@
             //----- advect-dye
             precision highp float;
             @include(common-fluid-compute)
+            uniform vec2 uDyeResolution;
 
             uniform sampler2D uDye;
             void main() {
                 vec2 advectionPos = getAdvectionPosition(uVelocity, vWorldPos);
-                gl_FragColor = vec4(texture2D(uDye, worldToTexCoord(advectionPos)).xyz, 0.0);
+                gl_FragColor = vec4(texture2DLinear(uDye, worldToTexCoord(advectionPos), uDyeResolution).xyz, 0.0);
             }
 
             //----- simple-init-circle
@@ -252,9 +270,8 @@
                     var options = {
                         wrapS: "edge",
                         wrapT: "edge",
-                        // TODO become edge
-                        minFilter: "linear",
-                        magFilter: "linear",
+                        minFilter: "nearest",
+                        magFilter: "nearest",
                     };
                     return glExtras.makeHalfFloatComputeTexture(this.gl, components, width, height, options);
                 },
@@ -339,7 +356,7 @@
 
                 start: function() {
                     this.gl = glUtils.initGL(this.canvas, {
-                        extensions: ["ANGLE_instanced_arrays", "OES_texture_float", "OES_texture_float_linear"],
+                        extensions: ["ANGLE_instanced_arrays", "OES_texture_float"],
                     });
 
                     // Misc WebGL stuff
@@ -414,7 +431,10 @@
 
                 doUpdateDye: function() {
                     this.gl.viewport(0, 0, this.width, this.height);
-                    this.renderQuadProgram(this.advectDye, this.dye.pong, {uDye: this.dye.ping});
+                    this.renderQuadProgram(this.advectDye, this.dye.pong, {
+                        uDye: this.dye.ping,
+                        uDyeResolution: [this.width, this.height],
+                    });
                     this.dye.swap();
                 },
 
@@ -487,11 +507,11 @@
 
                     this.initSegment = this.fluid.createQuadProgram("init-segment");
 
-                    var getTransformForSegment = function(segment) {
+                    var getTransformForSegment = function(segment, widthFactor) {
                         var moveVector = [segment.end[0] - segment.start[0], segment.end[1] - segment.start[1]];
                         var length = vec2.length(moveVector);
 
-                        var scaleY = self.fluid.canvasSizeToWorld(segment.width);
+                        var scaleY = self.fluid.canvasSizeToWorld(segment.width) * widthFactor;
                         var scaleX = length;
 
                         var angle = Math.atan2(moveVector[1], moveVector[0]);
@@ -513,7 +533,7 @@
 
                             self.fluid.renderQuadProgram(self.initSegment, dyeOut, {
                                 uValue: segment.color,
-                                uTransform: getTransformForSegment(segment),
+                                uTransform: getTransformForSegment(segment, 1.5),
                             });
                         }
                     };
@@ -525,7 +545,7 @@
 
                             self.fluid.renderQuadProgram(self.initSegment, forcesOut, {
                                 uValue: force.concat([0.0, 1.0]),
-                                uTransform: getTransformForSegment(segment),
+                                uTransform: getTransformForSegment(segment, 1.0),
                             });
                         }
                     };

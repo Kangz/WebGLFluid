@@ -203,14 +203,16 @@
             attribute vec2 aPosition;
 
             uniform vec2 uAspectRatio;
+            uniform mat3 uTransform;
 
             varying vec2 vTexCoord;
             varying vec2 vWorldPos;
 
             void main(void) {
-                vTexCoord = aPosition / 2.0 + vec2(0.5, 0.5);
-                vWorldPos = aPosition * uAspectRatio;
-                gl_Position = vec4(aPosition, 0.0, 1.0);
+                vec2 position = (uTransform * vec3(aPosition, 1.0)).xy;
+                vTexCoord = position / 2.0 + vec2(0.5, 0.5);
+                vWorldPos = position * uAspectRatio;
+                gl_Position = vec4(position, 0.0, 1.0);
             }
         </script>
 
@@ -274,6 +276,9 @@
                 createQuadProgram: function(name) {
                     var program = this.shaderPak.createProgram(this.gl, "compute-vs", name);
 
+                    var transform = mat3.create();
+                    mat3.identity(transform);
+
                     return {
                         program: program,
                         vao: program.createVAO({aPosition: {buffer: this.quadVertices}}),
@@ -282,15 +287,20 @@
                             uInvResolution: [1.0 / this.simulationWidth, 1.0 / this.simulationHeight],
                             uAspectRatio: this.aspectRatio,
                             uCellSize: 1.0 / this.simulationWidth * this.aspectRatio[0],
+                            uTransform: transform,
                         },
                     }
                 },
 
-                canvasToWorld: function(pos) {
+                canvasPosToWorld: function(pos) {
                     return [
                         (pos[0] / this.width * 2.0 - 1.0) * this.aspectRatio[0],
                         (pos[1] / this.height * -2.0 + 1.0) * this.aspectRatio[1],
                     ];
+                },
+
+                canvasSizeToWorld: function(size) {
+                    return size / this.width * 2.0 * this.aspectRatio[0];
                 },
 
                 renderQuadProgram: function(program, renderTo, uniforms) {
@@ -434,85 +444,88 @@
                     this.renderQuadProgram(this.substractPressureGradient, this.fluidVelocity.pong);
                     this.fluidVelocity.swap();
                 },
-
             };
 
-            var fluid;
-            var start = function() {
-                var canvas = document.getElementById("canvas");
-                canvas.width = window.innerWidth;
-                canvas.height = window.innerHeight;
-
-                var lastTimestamp = 0;
-
-                fluid = new FluidSimulation(document.getElementById("canvas"), {
-                    simulationScale: 400 / Math.max(canvas.width, canvas.height),
-                    numJacobiIters: 50,
-                });
-
-                // Drawing stuff with the mouse
-                // TODO make it draw segments instead of circles
-                var lastMousePos = [0.0, 0.0];
-                var mousePos = [0.0, 0.0];
-                var mouseForce = [0.0, 0.0];
-                var mouseDown = false;
-
-                fluid.onAddDye = function(dyeOut) {
-                    if (!mouseDown) {
-                        return;
-                    }
-                    fluid.renderQuadProgram(fluid.simpleInitCircle, dyeOut, {
-                        uValue: [0.2, 0.7, 0.9, 1.0],
-                        uTargetPos: mousePos,
-                        uRadius: 0.02,
-                    });
-                };
-
-                fluid.onAddForces = function(forcesOut) {
-                    if (!mouseDown) {
-                        return;
-                    }
-                    fluid.renderQuadProgram(fluid.simpleInitCircle, forcesOut, {
-                        uValue: mouseForce.concat([0.0, 0.0]),
-                        uTargetPos: mousePos,
-                        uRadius: 0.02,
-                    });
-                };
-
-                fluid.start();
-
-                var updateMouse = function(e) {
-                    mouseDown = e.buttons & 1;
-                    mousePos = fluid.canvasToWorld([e.clientX, e.clientY]);
-                };
-                canvas.addEventListener("mouseleave", function(e){mouseDown = false});
-                canvas.addEventListener("mouseenter", function(e){updateMouse(e)});
-                canvas.addEventListener("mousedown", function(e){updateMouse(e)});
-                canvas.addEventListener("mouseup", function(e){updateMouse(e)});
-                canvas.addEventListener("mousemove", function(e){updateMouse(e)});
-
-                var frame = function(dt) {
-                    mouseForce[0] = (mousePos[0] - lastMousePos[0]) / dt / dt;
-                    mouseForce[1] = (mousePos[1] - lastMousePos[1]) / dt / dt;
-                    lastMousePos = mousePos;
-                }
-
-                // Run the simulation loop
-                var frameLoop = function(timestamp) {
-                    if (lastTimestamp != 0) {
-                        var dt = timestamp - lastTimestamp;
-                        frame(dt / 1000);
-                        fluid.runFrame(dt / 1000);
-                    }
-                    lastTimestamp = timestamp;
-                    window.requestAnimationFrame(frameLoop);
-                }
-                window.requestAnimationFrame(frameLoop);
+            var Game = function() {
+                this.lastMousePos = [0.0, 0.0];
+                this.mousePos = [0.0, 0.0];
+                this.mouseForce = [0.0, 0.0];
+                this.mouseDown = false;
             }
+
+            Game.prototype = {
+                start: function() {
+                    var self = this;
+                    var canvas = document.getElementById("canvas");
+                    canvas.width = window.innerWidth;
+                    canvas.height = window.innerHeight;
+
+                    this.fluid = new FluidSimulation(document.getElementById("canvas"), {
+                        simulationScale: 400 / Math.max(canvas.width, canvas.height),
+                        numJacobiIters: 50,
+                    });
+
+                    this.fluid.onAddDye = function(dyeOut) {
+                        if (!self.mouseDown) {
+                            return;
+                        }
+                        self.fluid.renderQuadProgram(self.fluid.simpleInitCircle, dyeOut, {
+                            uValue: [0.2, 0.7, 0.9, 1.0],
+                            uTargetPos: self.mousePos,
+                            uRadius: 0.02,
+                        });
+                    };
+
+                    this.fluid.onAddForces = function(forcesOut) {
+                        if (!self.mouseDown) {
+                            return;
+                        }
+                        self.fluid.renderQuadProgram(self.fluid.simpleInitCircle, forcesOut, {
+                            uValue: self.mouseForce.concat([0.0, 0.0]),
+                            uTargetPos: self.mousePos,
+                            uRadius: 0.02,
+                        });
+                    };
+
+                    this.fluid.start();
+
+                    this.lastTimestamp = 0;
+                    var frameLoop = function(timestamp) {
+                        if (self.lastTimestamp != 0) {
+                            var dt = timestamp - self.lastTimestamp;
+                            self.frame(dt / 1000);
+                        }
+                        self.lastTimestamp = timestamp;
+                        window.requestAnimationFrame(frameLoop);
+                    }
+                    window.requestAnimationFrame(frameLoop);
+
+                    canvas.addEventListener("mouseleave", function(e){self.mouseDown = false});
+                    canvas.addEventListener("mouseenter", function(e){self.updateMouse(e)});
+                    canvas.addEventListener("mousedown", function(e){self.updateMouse(e)});
+                    canvas.addEventListener("mouseup", function(e){self.updateMouse(e)});
+                    canvas.addEventListener("mousemove", function(e){self.updateMouse(e)});
+                },
+
+                frame: function(dt) {
+                    this.mouseForce[0] = (this.mousePos[0] - this.lastMousePos[0]) / dt / dt;
+                    this.mouseForce[1] = (this.mousePos[1] - this.lastMousePos[1]) / dt / dt;
+                    this.lastMousePos = this.mousePos;
+
+                    this.fluid.runFrame(dt);
+                },
+
+                updateMouse: function(e) {
+                    this.mouseDown = e.buttons & 1;
+                    this.mousePos = this.fluid.canvasPosToWorld([e.clientX, e.clientY]);
+                },
+            };
+
+            var game = new Game();
         </script>
     </head>
 
-    <body onload="start();">
+    <body onload="game.start();">
         <canvas id="canvas">
             Your browser doesn't appear to support the HTML5 <code>&lt;canvas&gt;</code> element.
         </canvas>

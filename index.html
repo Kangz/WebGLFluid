@@ -74,6 +74,29 @@
                 return multiplier * texture2DLinear(velocity, texCoord + offset, uResolution).xy;
             }
 
+            vec2 sampleVelocityNearest(sampler2D velocity, vec2 texCoord) {
+                vec2 offset = vec2(0.0, 0.0);
+                vec2 multiplier = vec2(1.0, 1.0);
+
+                // TODO replace with the obstacle texture
+                if (texCoord.x < 0.0) {
+                    offset.x = uInvResolution.x;
+                    multiplier.x = -1.0;
+                } else if (texCoord.x > 1.0) {
+                    offset.x = -uInvResolution.x;
+                    multiplier.x = -1.0;
+                }
+                if (texCoord.y < 0.0) {
+                    offset.y = uInvResolution.y;
+                    multiplier.y = -1.0;
+                } else if (texCoord.y > 1.0) {
+                    offset.y = -uInvResolution.y;
+                    multiplier.y = -1.0;
+                }
+
+                return multiplier * texture2D(velocity, texCoord + offset).xy;
+            }
+
             float samplePressure(sampler2D pressure, vec2 texCoord) {
                 vec2 offset = vec2(0.0, 0.0);
 
@@ -93,7 +116,7 @@
             }
 
             vec2 getAdvectionPosition(sampler2D velocity, vec2 worldPos, float dt) {
-                return worldPos - sampleVelocity(uVelocity, worldToTexCoord(worldPos)) * dt;
+                return worldPos - sampleVelocityNearest(uVelocity, worldToTexCoord(worldPos)) * dt;
             }
 
             //----- advect-velocity
@@ -114,7 +137,7 @@
             uniform float uDt;
 
             void main() {
-                vec2 velocity = sampleVelocity(uVelocity, vTexCoord);
+                vec2 velocity = sampleVelocityNearest(uVelocity, vTexCoord);
                 vec2 force = texture2D(uForce, vTexCoord).xy;
                 gl_FragColor = vec4(velocity + force * uDt, 0.0, 0.0);
             }
@@ -124,10 +147,10 @@
             @include(common-fluid-compute)
 
             void main() {
-                vec2 left = sampleVelocity(uVelocity, vTexCoord - vec2(uInvResolution.x, 0.0));
-                vec2 right = sampleVelocity(uVelocity, vTexCoord + vec2(uInvResolution.x, 0.0));
-                vec2 bottom = sampleVelocity(uVelocity, vTexCoord - vec2(0.0, uInvResolution.y));
-                vec2 top = sampleVelocity(uVelocity, vTexCoord + vec2(0.0, uInvResolution.y));
+                vec2 left = sampleVelocityNearest(uVelocity, vTexCoord - vec2(uInvResolution.x, 0.0));
+                vec2 right = sampleVelocityNearest(uVelocity, vTexCoord + vec2(uInvResolution.x, 0.0));
+                vec2 bottom = sampleVelocityNearest(uVelocity, vTexCoord - vec2(0.0, uInvResolution.y));
+                vec2 top = sampleVelocityNearest(uVelocity, vTexCoord + vec2(0.0, uInvResolution.y));
 
                 float divergence = 0.5 / uCellSize * (right.x - left.x + top.y - bottom.y);
                 gl_FragColor = vec4(divergence, 0.0, 0.0, 0.0);
@@ -158,7 +181,7 @@
                 float bottom = samplePressure(uPressure, vTexCoord - vec2(0.0, uInvResolution.y));
                 float top = samplePressure(uPressure, vTexCoord + vec2(0.0, uInvResolution.y));
 
-                vec2 velocity = sampleVelocity(uVelocity, vTexCoord);
+                vec2 velocity = sampleVelocityNearest(uVelocity, vTexCoord);
                 gl_FragColor = vec4(velocity - 0.5 / uCellSize * vec2(right - left, top - bottom), 0.0, 0.0);
             }
 
@@ -245,8 +268,8 @@
                 this.width = this.canvas.width;
                 this.height = this.canvas.height;
 
-                this.simulationWidth = this.width * config.simulationScale;
-                this.simulationHeight = this.height * config.simulationScale;
+                this.simulationWidth = Math.floor(this.width * config.simulationScale);
+                this.simulationHeight = Math.floor(this.height * config.simulationScale);
 
                 this.aspectRatio = [1.0, 1.0];
                 if (this.simulationWidth > this.simulationHeight) {
@@ -347,7 +370,7 @@
 
                 start: function() {
                     this.gl = glUtils.initGL(this.canvas, {
-                        extensions: ["ANGLE_instanced_arrays", "OES_texture_float"],
+                        extensions: ["OES_texture_float"],
                     });
 
                     // Misc WebGL stuff
@@ -491,7 +514,7 @@
 
                     this.fluid = new FluidSimulation(this.canvas, {
                         simulationScale: 400 / Math.max(canvas.width, canvas.height),
-                        numJacobiIters: 50,
+                        numJacobiIters: 20,
                     });
 
                     this.fluid.start();

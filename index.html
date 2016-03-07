@@ -209,6 +209,20 @@
                 gl_FragColor = uValue * vec4(1.0, 1.0, 1.0, factor);
             }
 
+            //----- init-from-texture
+            precision highp float;
+            varying vec2 vTexCoord;
+            uniform sampler2D uTexture;
+            uniform float uAlpha;
+
+            void main() {
+                vec3 color = texture2D(uTexture, vec2(vTexCoord.x, 1.0 - vTexCoord.y)).xyz;
+                if (length(color) < 0.001) {
+                    discard;
+                }
+                gl_FragColor = vec4(color, uAlpha);
+            }
+
             //----- draw-velocity
             precision highp float;
             uniform sampler2D uVelocity;
@@ -507,6 +521,8 @@
                 init: function(canvasId) {
                     var self = this;
                     this.segments = [];
+                    this.dyeTexture = null;
+                    this.dyeTextureAlpha = 0.0;
 
                     this.canvas = document.getElementById(canvasId);
                     this.canvas.width = window.innerWidth;
@@ -520,6 +536,7 @@
                     this.fluid.start();
 
                     this.initSegment = this.fluid.createQuadProgram("init-segment");
+                    this.initTexture = this.fluid.createQuadProgram("init-from-texture");
 
                     var getTransformForSegment = function(segment, widthFactor) {
                         var moveVector = [segment.end[0] - segment.start[0], segment.end[1] - segment.start[1]];
@@ -549,6 +566,13 @@
                                 uValue: segment.color,
                                 uTransform: getTransformForSegment(segment, 1.5),
                             });
+                        }
+                        if (self.dyeTexture != null) {
+                            self.fluid.renderQuadProgram(self.initTexture, dyeOut, {
+                                uTexture: self.dyeTexture,
+                                uAlpha: self.dyeTextureAlpha,
+                            });
+                            self.dyeTexture = null;
                         }
                     };
 
@@ -584,6 +608,14 @@
                         width: width,
                     });
                 },
+
+                addDyeFromCanvas: function(canvas, alpha) {
+                    this.dyeTexture = this.fluid.gl.createTextureFromCanvas(canvas, {
+                        'wrapS': 'edge',
+                        'wrapT': 'edge',
+                        });
+                    this.dyeTextureAlpha = alpha;
+                },
             };
 
             var Game = function() {
@@ -597,9 +629,42 @@
             Game.prototype = {
                 start: function() {
                     var self = this;
+
                     this.api = new FluidAPI();
                     this.api.init("canvas");
                     window.fluidApi = this.api;
+
+                    this.color = [0.2, 0.7, 0.9, 1.0];
+                    this.initCanvas = (function() {
+                        var canvas = document.createElement('canvas');
+                        canvas.width = window.innerWidth;
+                        canvas.height = window.innerHeight;
+
+                        var context = canvas.getContext('2d');
+                        context.fillStyle = 'rgba(0, 0, 0, 0)';
+                        context.fillRect(0, 0, canvas.width, canvas.height);
+
+                        var text = decodeURIComponent(location.search.substring(1)).split('-');
+
+                        context.font = '72px sans';
+                        context.textAlign = 'center';
+
+                        var htmlColor = 'rgba(' + [
+                            Math.round(self.color[0] * 255),
+                            Math.round(self.color[1] * 255),
+                            Math.round(self.color[2] * 255),
+                            255
+                        ].join(',') + ')';
+
+                        var centerX = canvas.width / 2;
+                        for (var i = 0; i < text.length; ++i) {
+                            context.fillStyle = htmlColor;
+                            var height = canvas.height / (text.length) * (i + 0.5);
+                            context.fillText(text[i], centerX, height);
+                        }
+
+                        return canvas;
+                    })();
 
                     this.lastTimestamp = 0;
                     var frameLoop = function(timestamp) {
@@ -629,6 +694,8 @@
                         this.touchSegments.push([[this.lastMousePos[0], this.lastMousePos[1]], [this.mousePos[0], this.mousePos[1]]]);
                     }
 
+                    this.api.addDyeFromCanvas(this.initCanvas, 0.05);
+
                     for (var id in this.touches) {
                         var touch = this.touches[id];
                         if (touch.length > 1) {
@@ -639,11 +706,10 @@
                     this.lastMousePos = this.mousePos;
 
                     var width = Math.max(this.api.canvas.width, this.api.canvas.height) / 100.0;
-                    var color = [0.2, 0.7, 0.9, 1.0];
 
                     for (var i in this.touchSegments) {
                         var segment = this.touchSegments[i];
-                        this.api.addSegment(segment[0], segment[1], color, width);
+                        this.api.addSegment(segment[0], segment[1], this.color, width);
                     }
                     this.api.frame(dt);
 
